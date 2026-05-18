@@ -103,65 +103,18 @@ CONFIGS.waist = {
 --  ACCESSORY CLASSIFICATION
 -- ================================================================
 
-local SUPPORTED_TORSO_ATTACHMENT_NAMES = {
+local WAIST_ATTACHMENT_NAMES = {
 	WaistFrontAttachment = true,
-	WaistCenterAttachment = true,
 	WaistBackAttachment = true,
-
-	BodyFrontAttachment = true,
-	BodyBackAttachment = true,
-	BodyCenterAttachment = true,
-
-	TailAttachment = true,
-	AccessoryAttachment = true,
 }
 
-local ATTACHMENT_SEARCH_ORDER_R15 = {
-	"WaistBackAttachment",
-	"WaistCenterAttachment",
-	"WaistFrontAttachment",
-	"BodyBackAttachment",
-	"BodyCenterAttachment",
-	"BodyFrontAttachment",
-	"TailAttachment",
-	"AccessoryAttachment",
-}
-
-local ATTACHMENT_SEARCH_ORDER_R6 = {
-	"BodyBackAttachment",
-	"WaistBackAttachment",
-	"WaistCenterAttachment",
-	"BodyCenterAttachment",
-	"WaistFrontAttachment",
-	"BodyFrontAttachment",
-	"TailAttachment",
-	"AccessoryAttachment",
-}
-
-local function findAttachmentByOrder(container, orderedNames)
-	for _, name in ipairs(orderedNames) do
-		local att = container:FindFirstChild(name, true)
-		if att and att:IsA("Attachment") then
-			return att
-		end
-	end
-	return nil
-end
-
-local function findMatchingAttachmentPair(handle, characterModel, rigType)
-	local searchOrder = (rigType == Enum.HumanoidRigType.R6) and ATTACHMENT_SEARCH_ORDER_R6 or ATTACHMENT_SEARCH_ORDER_R15
-
-	for _, name in ipairs(searchOrder) do
-		local accAtt = handle:FindFirstChild(name, true)
-		if accAtt and accAtt:IsA("Attachment") then
-			local matching = characterModel:FindFirstChild(name, true)
+local function findMatchingAttachmentPair(handle, characterModel)
+	for _, desc in ipairs(handle:GetDescendants()) do
+		if desc:IsA("Attachment") and WAIST_ATTACHMENT_NAMES[desc.Name] then
+			local matching = characterModel:FindFirstChild(desc.Name, true)
 			if matching and matching:IsA("Attachment") then
-				return accAtt, matching
+				return desc, matching
 			end
-
-			-- Keep the accessory attachment even if the character lacks a matching
-			-- attachment object. This avoids falling back to a centered pivot on R6.
-			return accAtt, nil
 		end
 	end
 
@@ -178,21 +131,12 @@ local function classifyAccessory(acc, mode, char)
 		return nil
 	end
 
-	local rigType = Enum.HumanoidRigType.R15
-	local humanoid = char:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		rigType = humanoid.RigType
-	end
-
-	local accAttachment = findAttachmentByOrder(handle,
-		(rigType == Enum.HumanoidRigType.R6) and ATTACHMENT_SEARCH_ORDER_R6 or ATTACHMENT_SEARCH_ORDER_R15
-	)
-
-	if not accAttachment then
+	local accAttachment, charAttachment = findMatchingAttachmentPair(handle, char)
+	if not accAttachment or not charAttachment then
 		return nil
 	end
 
-	if not SUPPORTED_TORSO_ATTACHMENT_NAMES[accAttachment.Name] then
+	if not WAIST_ATTACHMENT_NAMES[accAttachment.Name] then
 		return nil
 	end
 
@@ -359,9 +303,6 @@ local NAMED_ATTACHMENT_CANDIDATES = {
 	"BodyBackAttachment",
 	"WaistBackAttachment",
 	"WaistFrontAttachment",
-	"WaistCenterAttachment",
-	"BodyFrontAttachment",
-	"BodyCenterAttachment",
 	"TailAttachment",
 	"WingAttachment",
 	"NeckAttachment",
@@ -509,8 +450,6 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 		return
 	end
 
-	local rigType = humanoid.RigType
-
 	local floorRayParams = RaycastParams.new()
 	floorRayParams.FilterDescendantsInstances = { char }
 	floorRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -574,7 +513,7 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 	local cfgFloorContactDist     = CONFIG.FLOOR_CONTACT_DIST
 	local cfgRestingRollBias      = CONFIG.RESTING_ROLL_BIAS
 
-	local accessoryAttachment, characterAttachment = findMatchingAttachmentPair(handle, char, rigType)
+	local accessoryAttachment, characterAttachment = findMatchingAttachmentPair(handle, char)
 
 	local pivotPos
 	if accessoryAttachment then
@@ -588,23 +527,7 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 		baseC0 = characterAttachment.CFrame
 	end
 
-	-- Small R6-only bias so torso-mounted accessories do not collapse toward the
-	-- body center when the rig doesn't expose a matching attachment.
-	local r6PivotBias = Vector3Zero
-	if rigType == Enum.HumanoidRigType.R6 then
-		local attachmentName = accessoryAttachment and accessoryAttachment.Name or ""
-		local lowerAccessoryName = accessory.Name:lower()
-		local maxDim = mathMax(handle.Size.X, handle.Size.Y, handle.Size.Z)
-		local bias = mathMax(0.12, maxDim * 0.12)
-
-		if attachmentName:find("Back", 1, true) or lowerAccessoryName:find("back", 1, true) or lowerAccessoryName:find("tail", 1, true) then
-			r6PivotBias = Vector3New(0, 0, bias)
-		elseif attachmentName:find("Front", 1, true) or lowerAccessoryName:find("front", 1, true) then
-			r6PivotBias = Vector3New(0, 0, -bias)
-		end
-	end
-
-	local baseC0Rot = CFrameNew(-(pivotPos + r6PivotBias)) * baseC0
+	local baseC0Rot = CFrameNew(-pivotPos.X, -pivotPos.Y, -pivotPos.Z) * baseC0
 
 	local yawAngle, yawVel = 0, 0
 	local pitchAngle, pitchVel = 0, 0
@@ -870,7 +793,7 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 
 			local targetRoll = yawAngle * cfgYawToRoll
 				+ sideMotion * cfgSideToRoll
-			- smoothedYawRate * cfgRotRollInfluence * 0.04
+				- smoothedYawRate * cfgRotRollInfluence * 0.04
 
 			local wagFadeEarly = mathMax(0, 1 - speed * cfgWagFadeSpeed * 0.5)
 			targetRoll += cfgRestingRollBias * wagFadeEarly
