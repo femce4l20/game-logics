@@ -243,6 +243,83 @@ local function hashString(str)
 	return h
 end
 
+local WORLD_UP = Vector3New(0, 1, 0)
+local WORLD_DOWN = Vector3New(0, -1, 0)
+
+local function isValidFloorPart(part)
+	return part
+		and part:IsA("BasePart")
+		and part.CanCollide
+		and part.Transparency < 1
+end
+
+local function raycastVisibleFloor(origin, direction, baseParams)
+	local ignoreList = {}
+
+	for i, inst in ipairs(baseParams.FilterDescendantsInstances) do
+		ignoreList[i] = inst
+	end
+
+	for _ = 1, 8 do
+		local params = RaycastParams.new()
+		params.FilterType = baseParams.FilterType
+		params.IgnoreWater = baseParams.IgnoreWater == true
+		params.FilterDescendantsInstances = ignoreList
+
+		local result = workspace:Raycast(origin, direction, params)
+		if not result then
+			return nil
+		end
+
+		if isValidFloorPart(result.Instance) then
+			return result
+		end
+
+		table.insert(ignoreList, result.Instance)
+	end
+
+	return nil
+end
+
+local function getFloorSupportState(rootCF)
+	local up = rootCF.UpVector
+	local right = rootCF.RightVector
+	local look = rootCF.LookVector
+
+	local upY = mathAbs(up.Y)
+	local rightY = mathAbs(right.Y)
+	local lookY = mathAbs(look.Y)
+
+	local sideLying = upY < 0.48 and rightY > lookY and rightY > 0.55
+	local faceDown = upY < 0.48 and lookY >= rightY and lookY > 0.55
+
+	if not sideLying and not faceDown then
+		return WORLD_DOWN, "upright"
+	end
+
+	local dir = -up
+	if dir.Magnitude < 1e-4 then
+		dir = WORLD_DOWN
+	else
+		dir = dir.Unit
+	end
+
+	return dir, sideLying and "side" or "face"
+end
+
+local function findMatchingAttachmentPair(handle, characterModel)
+	for _, desc in ipairs(handle:GetDescendants()) do
+		if desc:IsA("Attachment") then
+			local matching = characterModel:FindFirstChild(desc.Name, true)
+			if matching and matching:IsA("Attachment") then
+				return desc, matching
+			end
+		end
+	end
+
+	return nil, nil
+end
+
 -- ================================================================
 --  ANIMATION SAMPLING
 -- ================================================================
@@ -450,6 +527,7 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 	local floorRayParams = RaycastParams.new()
 	floorRayParams.FilterDescendantsInstances = { char }
 	floorRayParams.FilterType = Enum.RaycastFilterType.Exclude
+	floorRayParams.IgnoreWater = true
 
 	local CONFIG = {}
 	applyScaledConfig(CONFIG, baseConfig, handle)
@@ -509,8 +587,20 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 	local cfgFloorContactDist     = CONFIG.FLOOR_CONTACT_DIST
 	local cfgRestingRollBias      = CONFIG.RESTING_ROLL_BIAS
 
+	local accessoryAttachment, characterAttachment = findMatchingAttachmentPair(handle, char)
+
+	local pivotPos
+	if accessoryAttachment then
+		pivotPos = accessoryAttachment.Position
+	else
+		pivotPos = findBestPivot(handle, weld, part0)
+	end
+
 	local baseC0 = weld.C0
-	local pivotPos = findBestPivot(handle, weld, part0)
+	if characterAttachment then
+		baseC0 = characterAttachment.CFrame
+	end
+
 	local baseC0Rot = CFrameNew(-pivotPos.X, -pivotPos.Y, -pivotPos.Z) * baseC0
 
 	local yawAngle, yawVel = 0, 0
@@ -561,6 +651,7 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 
 	local floorProximity = 0
 	local floorContact = false
+	local floorState = "upright"
 
 	local function trackFlip(vel, lastSign, score)
 		local s = vel > WOBBLE_MIN_VEL and 1
@@ -600,17 +691,34 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 		end
 
 		do
-			local origin = handle.Position + Vector3New(0, -0.15, 0)
-			local rayDir = Vector3New(0, -cfgFloorCheckDist, 0)
-			local result = workspace:Raycast(origin, rayDir, floorRayParams)
+			local floorDown
+			floorDown, floorState = getFloorSupportState(root.CFrame)
+
+			local floorCheckDist = cfgFloorCheckDist
+			local floorContactDist = cfgFloorContactDist
+
+			if floorState ~= "upright" then
+				floorCheckDist *= 1.35
+				floorContactDist *= 1.35
+			end
+
+			local origin = handle.Position + (floorDown * 0.15)
+			local rayDir = floorDown * floorCheckDist
+			local result = raycastVisibleFloor(origin, rayDir, floorRayParams)
 
 			floorProximity = 0
 			floorContact = false
 
 			if result then
-				local hp = result.Instance
-				floorProximity = 1 - mathClamp(result.Distance / cfgFloorCheckDist, 0, 1)
-				floorContact = result.Distance <= cfgFloorContactDist
+				local hitPart = result.Instance
+				if hitPart and hitPart:IsA("BasePart") then
+					local partSize = hitPart.Size
+					local maxDim = mathMax(partSize.X, mathMax(partSize.Y, partSize.Z))
+					if maxDim >= cfgFloorMinPartSize or floorState ~= "upright" then
+						floorProximity = 1 - mathClamp(result.Distance / floorCheckDist, 0, 1)
+						floorContact = result.Distance <= floorContactDist
+					end
+				end
 			end
 		end
 
@@ -759,7 +867,7 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 
 			local targetRoll = yawAngle * cfgYawToRoll
 				+ sideMotion * cfgSideToRoll
-				- smoothedYawRate * cfgRotRollInfluence * 0.04
+			- smoothedYawRate * cfgRotRollInfluence * 0.04
 
 			local wagFadeEarly = mathMax(0, 1 - speed * cfgWagFadeSpeed * 0.5)
 			targetRoll += cfgRestingRollBias * wagFadeEarly
@@ -796,13 +904,27 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 
 			if floorProximity > 0 then
 				local pushForce = floorProximity * floorProximity * cfgFloorPushStrength
+
+				if floorState ~= "upright" then
+					pushForce *= 0.55
+				end
+
 				pitchVel += pushForce * ts
+
 				if floorContact then
+					local settleStrength = (floorState ~= "upright") and 0.12 or 0.25
+
 					if pitchAngle < 0 then
-						pitchAngle *= (1 - 0.25 * (ts * 60))
+						pitchAngle *= (1 - settleStrength * (ts * 60))
 					end
+
 					if pitchVel < 0 then
 						pitchVel = 0
+					end
+
+					if floorState ~= "upright" then
+						yawVel *= 0.92
+						rollVel *= 0.92
 					end
 				end
 			end
@@ -878,9 +1000,7 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 	return conn
 end
 
--- ================================================================
---  CHARACTER INITIALISATION
--- ================================================================
+--  CHARACTER INIT
 
 local function initCharacter(char, mode)
 	character = char
@@ -918,9 +1038,7 @@ local function initCharacter(char, mode)
 	table.insert(activeConnections, childAddedConn)
 end
 
--- ================================================================
 --  ENTRY POINT
--- ================================================================
 
 if character then
 	initCharacter(character, DEFAULT_MODE)
