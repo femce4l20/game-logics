@@ -17,7 +17,7 @@ local Vector3Zero = Vector3.zero
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 
-local DEFAULT_MODE = "both"
+local DEFAULT_MODE = "waist"
 
 -- ================================================================
 --  CONFIGS (per accessory type)
@@ -25,81 +25,7 @@ local DEFAULT_MODE = "both"
 
 local CONFIGS = {}
 
-CONFIGS.wings = {
-	STIFFNESS     = 150,
-	DAMPING       = 3.2,
-	INERTIA_SCALE = 0.02,
-
-	SIDE_DEADZONE    = 2.0,
-	FORWARD_DEADZONE = 0.7,
-
-	FORWARD_DRAG_BIAS     = -0.01,
-	FORWARD_YAW_REDUCTION = 0.80,
-	FORWARD_MOTION_FULL   = 9,
-	YAW_UNLOCK_ANGLE      = mathRad(7),
-	YAW_FULL_UNLOCK       = mathRad(12),
-
-	MOTION_TRAIL_SMOOTHING = 0.07,
-	MOTION_ACCEL_INFLUENCE = 0.02,
-	TRAIL_RELEASE          = 0.04,
-
-	ROTATION_YAW_INFLUENCE   = 0.05,
-	ROTATION_ROLL_INFLUENCE  = 0.55,
-	ROTATION_PITCH_INFLUENCE = 0.08,
-	ROTATION_SMOOTHING       = 0.22,
-
-	ROLL_STIFFNESS = 50,
-	ROLL_DAMPING   = 0.75,
-	MAX_ROLL_ANGLE = mathRad(45),
-	YAW_TO_ROLL    = 0.25,
-	SIDE_TO_ROLL   = 0.02,
-
-	WHIP_THRESHOLD = 3.0,
-	WHIP_STRENGTH  = 1.5,
-	WHIP_COOLDOWN  = 0.2,
-
-	SMEAR_MAX_ANGLE  = mathRad(90),
-	SMEAR_SPEED_FULL = 18,
-
-	WAG_SPEED               = 0.7,
-	WAG_AMPLITUDE           = 0.10,
-	WAG_FADE_SPEED          = 0.05,
-	WAG_SECONDARY_SPEED     = 4.5,
-	WAG_SECONDARY_AMPLITUDE = 0.025,
-	WAG_PITCH_BOB           = mathRad(1.2),
-	WAG_ROLL_AMPLITUDE      = mathRad(2.5),
-	WAG_ROLL_SPEED          = 3.8,
-
-	ANIMATION_INFLUENCE        = 0.45,
-	ANIMATION_LINEAR_INFLUENCE = 0.30,
-	ANIMATION_MOTOR_INFLUENCE  = 0.22,
-	ANIMATION_BLEND_SMOOTHING  = 0.25,
-
-	YAW_TO_PITCH_COUPLING     = 0.05,
-	PITCH_TO_YAW_COUPLING     = 0.015,
-	YAW_VELOCITY_TO_PITCH     = 0.0015,
-	PITCH_VELOCITY_TO_YAW     = 0.0008,
-
-	CHAOS_STRENGTH = 0.012,
-	CHAOS_RESPONSE = 0.08,
-	CHAOS_DAMPING  = 0.90,
-
-	SPRINT_SPEED           = 16,
-	MIN_INVERSION_STRENGTH  = 0.12,
-	MAX_INVERSION_STRENGTH  = 0.70,
-
-	MAX_ANGLE = mathRad(60),
-	TIMESTEP = 1 / 120,
-
-	FLOOR_CHECK_DIST    = 2.0,
-	FLOOR_MIN_PART_SIZE = 4,
-	FLOOR_PUSH_STRENGTH = 100,
-	FLOOR_CONTACT_DIST  = 0.35,
-
-	RESTING_ROLL_BIAS = 0,
-}
-
-CONFIGS.tails = {
+CONFIGS.waist = {
 	STIFFNESS     = 50,
 	DAMPING       = 2.2,
 	INERTIA_SCALE = 0.045,
@@ -174,49 +100,103 @@ CONFIGS.tails = {
 }
 
 -- ================================================================
---  WHITELISTS (per accessory type)
--- ================================================================
-
-local WHITELISTS = {
-	wings = {
-		"Accessory (Devil Wings)",
-	},
-	tails = {
-		"Circle.032Accessory",
-		"Accessory (Handle)",
-		"Accessory (RedTailAccessory)",
-	},
-}
-
-local WHITELIST_SETS = {}
-for accType, list in pairs(WHITELISTS) do
-	local set = {}
-	for _, name in ipairs(list) do
-		set[name] = true
-	end
-	WHITELIST_SETS[accType] = set
-end
-
--- ================================================================
 --  ACCESSORY CLASSIFICATION
 -- ================================================================
 
-local function classifyAccessory(acc, mode)
-	local nameLower = acc.Name:lower()
+local SUPPORTED_TORSO_ATTACHMENT_NAMES = {
+	WaistFrontAttachment = true,
+	WaistCenterAttachment = true,
+	WaistBackAttachment = true,
 
-	if mode == "wings" or mode == "both" then
-		if nameLower:find("wing") or WHITELIST_SETS.wings[acc.Name] then
-			return "wings"
+	BodyFrontAttachment = true,
+	BodyBackAttachment = true,
+	BodyCenterAttachment = true,
+
+	TailAttachment = true,
+	AccessoryAttachment = true,
+}
+
+local ATTACHMENT_SEARCH_ORDER_R15 = {
+	"WaistBackAttachment",
+	"WaistCenterAttachment",
+	"WaistFrontAttachment",
+	"BodyBackAttachment",
+	"BodyCenterAttachment",
+	"BodyFrontAttachment",
+	"TailAttachment",
+	"AccessoryAttachment",
+}
+
+local ATTACHMENT_SEARCH_ORDER_R6 = {
+	"BodyBackAttachment",
+	"WaistBackAttachment",
+	"WaistCenterAttachment",
+	"BodyCenterAttachment",
+	"WaistFrontAttachment",
+	"BodyFrontAttachment",
+	"TailAttachment",
+	"AccessoryAttachment",
+}
+
+local function findAttachmentByOrder(container, orderedNames)
+	for _, name in ipairs(orderedNames) do
+		local att = container:FindFirstChild(name, true)
+		if att and att:IsA("Attachment") then
+			return att
 		end
 	end
-
-	if mode == "tails" or mode == "both" then
-		if nameLower:find("tail") or WHITELIST_SETS.tails[acc.Name] then
-			return "tails"
-		end
-	end
-
 	return nil
+end
+
+local function findMatchingAttachmentPair(handle, characterModel, rigType)
+	local searchOrder = (rigType == Enum.HumanoidRigType.R6) and ATTACHMENT_SEARCH_ORDER_R6 or ATTACHMENT_SEARCH_ORDER_R15
+
+	for _, name in ipairs(searchOrder) do
+		local accAtt = handle:FindFirstChild(name, true)
+		if accAtt and accAtt:IsA("Attachment") then
+			local matching = characterModel:FindFirstChild(name, true)
+			if matching and matching:IsA("Attachment") then
+				return accAtt, matching
+			end
+
+			-- Keep the accessory attachment even if the character lacks a matching
+			-- attachment object. This avoids falling back to a centered pivot on R6.
+			return accAtt, nil
+		end
+	end
+
+	return nil, nil
+end
+
+local function classifyAccessory(acc, mode, char)
+	if mode ~= "waist" and mode ~= "both" then
+		return nil
+	end
+
+	local handle = acc:FindFirstChild("Handle")
+	if not handle then
+		return nil
+	end
+
+	local rigType = Enum.HumanoidRigType.R15
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		rigType = humanoid.RigType
+	end
+
+	local accAttachment = findAttachmentByOrder(handle,
+		(rigType == Enum.HumanoidRigType.R6) and ATTACHMENT_SEARCH_ORDER_R6 or ATTACHMENT_SEARCH_ORDER_R15
+	)
+
+	if not accAttachment then
+		return nil
+	end
+
+	if not SUPPORTED_TORSO_ATTACHMENT_NAMES[accAttachment.Name] then
+		return nil
+	end
+
+	return "waist"
 end
 
 -- ================================================================
@@ -307,19 +287,6 @@ local function getFloorSupportState(rootCF)
 	return dir, sideLying and "side" or "face"
 end
 
-local function findMatchingAttachmentPair(handle, characterModel)
-	for _, desc in ipairs(handle:GetDescendants()) do
-		if desc:IsA("Attachment") then
-			local matching = characterModel:FindFirstChild(desc.Name, true)
-			if matching and matching:IsA("Attachment") then
-				return desc, matching
-			end
-		end
-	end
-
-	return nil, nil
-end
-
 -- ================================================================
 --  ANIMATION SAMPLING
 -- ================================================================
@@ -391,6 +358,10 @@ local NAMED_ATTACHMENT_CANDIDATES = {
 	"AccessoryAttachment",
 	"BodyBackAttachment",
 	"WaistBackAttachment",
+	"WaistFrontAttachment",
+	"WaistCenterAttachment",
+	"BodyFrontAttachment",
+	"BodyCenterAttachment",
 	"TailAttachment",
 	"WingAttachment",
 	"NeckAttachment",
@@ -498,6 +469,20 @@ local function cleanupAll()
 	activeConnections = {}
 end
 
+local function waitForRigParts(char)
+	local humanoid = char:WaitForChild("Humanoid")
+	local root = char:WaitForChild("HumanoidRootPart")
+
+	if humanoid.RigType == Enum.HumanoidRigType.R6 then
+		char:WaitForChild("Torso")
+	else
+		char:WaitForChild("UpperTorso")
+		char:WaitForChild("LowerTorso")
+	end
+
+	return humanoid, root
+end
+
 local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 	local handle = accessory:FindFirstChild("Handle")
 	if not handle then
@@ -523,6 +508,8 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 		warn("[TailPhysics] Missing Humanoid or HRP:", accessory.Name)
 		return
 	end
+
+	local rigType = humanoid.RigType
 
 	local floorRayParams = RaycastParams.new()
 	floorRayParams.FilterDescendantsInstances = { char }
@@ -587,7 +574,7 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 	local cfgFloorContactDist     = CONFIG.FLOOR_CONTACT_DIST
 	local cfgRestingRollBias      = CONFIG.RESTING_ROLL_BIAS
 
-	local accessoryAttachment, characterAttachment = findMatchingAttachmentPair(handle, char)
+	local accessoryAttachment, characterAttachment = findMatchingAttachmentPair(handle, char, rigType)
 
 	local pivotPos
 	if accessoryAttachment then
@@ -601,7 +588,23 @@ local function setupPhysicsAccessory(accessory, char, baseConfig, accType)
 		baseC0 = characterAttachment.CFrame
 	end
 
-	local baseC0Rot = CFrameNew(-pivotPos.X, -pivotPos.Y, -pivotPos.Z) * baseC0
+	-- Small R6-only bias so torso-mounted accessories do not collapse toward the
+	-- body center when the rig doesn't expose a matching attachment.
+	local r6PivotBias = Vector3Zero
+	if rigType == Enum.HumanoidRigType.R6 then
+		local attachmentName = accessoryAttachment and accessoryAttachment.Name or ""
+		local lowerAccessoryName = accessory.Name:lower()
+		local maxDim = mathMax(handle.Size.X, handle.Size.Y, handle.Size.Z)
+		local bias = mathMax(0.12, maxDim * 0.12)
+
+		if attachmentName:find("Back", 1, true) or lowerAccessoryName:find("back", 1, true) or lowerAccessoryName:find("tail", 1, true) then
+			r6PivotBias = Vector3New(0, 0, bias)
+		elseif attachmentName:find("Front", 1, true) or lowerAccessoryName:find("front", 1, true) then
+			r6PivotBias = Vector3New(0, 0, -bias)
+		end
+	end
+
+	local baseC0Rot = CFrameNew(-(pivotPos + r6PivotBias)) * baseC0
 
 	local yawAngle, yawVel = 0, 0
 	local pitchAngle, pitchVel = 0, 0
@@ -1006,10 +1009,7 @@ local function initCharacter(char, mode)
 	character = char
 	cleanupAll()
 
-	char:WaitForChild("HumanoidRootPart")
-	char:WaitForChild("LowerTorso")
-	char:WaitForChild("UpperTorso")
-	char:WaitForChild("Humanoid")
+	local humanoid, root = waitForRigParts(char)
 
 	task.wait(0.25)
 
@@ -1018,7 +1018,7 @@ local function initCharacter(char, mode)
 			return
 		end
 
-		local accType = classifyAccessory(child, mode)
+		local accType = classifyAccessory(child, mode, char)
 		if accType then
 			local conn = setupPhysicsAccessory(child, char, CONFIGS[accType], accType)
 			if conn then
